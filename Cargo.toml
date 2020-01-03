@@ -1,0 +1,9 @@
+[package]
+name = "gcode_simulator"
+version = "0.1.0"
+authors = ["Sebastian Jegerås <jegeras@gmail.com>"]
+edition = "2018"
+[dependencies]
+itertools = "0.8.1"
+regex = "1"
+image = "0.22"
