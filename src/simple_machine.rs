@@ -32,7 +32,7 @@ impl SimpleMachine {
             Some(entry) => {
                 match &entry[0].command {
                     // Movement
-                    'G' => match &entry[0].subcommand.0 {
+                    'G' => match &entry[0].major {
                         0 => println!("Rapid movement, {:?}", entry),
                         1 => println!("Interpolated movement: {:?}", entry),
                         _ => println!("Unsupported: {:?}", entry),
