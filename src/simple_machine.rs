@@ -191,7 +191,7 @@ impl SimpleMachine {
             added_to_queue =
                 match fixedresolution_step(&mut current.z, next.z, next.steps_per_unit_x) {
                     Some(direction) => {
-                        self.add_to_queue((Command::StepperY, direction, next.feedrate))
+                        self.add_to_queue((Command::StepperZ, direction, next.feedrate))
                     }
                     None => added_to_queue,
                 };

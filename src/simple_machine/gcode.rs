@@ -1,4 +1,3 @@
-use itertools::Itertools;
 use std::collections::HashMap;
 
 #[cfg(test)]
@@ -175,7 +174,7 @@ pub fn parse_line(linenumber: i32, line: &str) -> Option<(i32, GCodeBlock)> {
                                     None => 0,
                                 };
                                 let minor = match parts.next() {
-                                    Some(v) => match value.parse::<f32>() {
+                                    Some(_) => match value.parse::<f32>() {
                                         Ok(v) => {
                                             ((v * resolution) - (major as f32 * resolution))
                                                 / resolution
