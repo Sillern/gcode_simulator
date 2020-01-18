@@ -18,8 +18,36 @@ mod tests {
                     command: 'X',
                     major: 0,
                     minor: 0,
-                    raw_value: None
+                    text_value: None
                 }],
+                result.1
+            );
+        }
+    }
+
+    #[test]
+    fn test_with_one_param() {
+        {
+            let input = "N13 G0 X1.2";
+
+            let result = parse_line(0, input).unwrap();
+
+            assert_eq!(13, result.0);
+            assert_eq!(
+                vec![
+                    GCode {
+                        command: 'G',
+                        major: 0,
+                        minor: 0,
+                        text_value: None
+                    },
+                    GCode {
+                        command: 'X',
+                        major: 1,
+                        minor: 2,
+                        text_value: None
+                    }
+                ],
                 result.1
             );
         }
@@ -59,7 +87,23 @@ mod tests {
                     command: 'X',
                     major: 2,
                     minor: 2,
-                    raw_value: None
+                    text_value: None
+                }],
+                result.1
+            );
+        }
+        {
+            let input = "O49(df)68 (dff (sdf) ) (OPTIONAL COMMENT) ; .";
+
+            let result = parse_line(0, input).unwrap();
+
+            assert_eq!(0, result.0);
+            assert_eq!(
+                vec![GCode {
+                    command: 'O',
+                    major: 4968,
+                    minor: 0,
+                    text_value: None
                 }],
                 result.1
             );
@@ -72,7 +116,7 @@ pub struct GCode {
     pub command: char,
     pub major: usize,
     pub minor: usize,
-    raw_value: Option<String>,
+    text_value: Option<String>,
 }
 type GCodeBlock = Vec<GCode>;
 pub type GCodeProgram = HashMap<i32, GCodeBlock>;
@@ -81,10 +125,23 @@ pub fn parse_line(linenumber: i32, line: &str) -> Option<(i32, GCodeBlock)> {
     // Detect comments
     let cleaned_line = match line.split(|c| c == ';' || c == '%').next() {
         Some(section) => {
-            if section.len() == 0 {
-                None
+            if section.len() != 0 {
+                let mut comment_scope = 0;
+                let mut cleaned_section: String = "".to_string();
+                for c in section.chars() {
+                    match c {
+                        ')' => comment_scope -= 1,
+                        '(' => comment_scope += 1,
+                        _ => {
+                            if comment_scope == 0 {
+                                cleaned_section.push(c);
+                            }
+                        }
+                    }
+                }
+                Some(cleaned_section)
             } else {
-                Some(section)
+                None
             }
         }
         None => None,
@@ -126,7 +183,7 @@ pub fn parse_line(linenumber: i32, line: &str) -> Option<(i32, GCodeBlock)> {
                                         Some(v) => *v,
                                         None => 0,
                                     },
-                                    raw_value: None,
+                                    text_value: None,
                                 })
                             }
                             None => None,
