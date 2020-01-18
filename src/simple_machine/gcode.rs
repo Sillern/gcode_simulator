@@ -17,7 +17,7 @@ mod tests {
                 vec![GCode {
                     command: 'X',
                     major: 0,
-                    minor: 0,
+                    minor: 0.0,
                     text_value: None
                 }],
                 result.1
@@ -38,13 +38,13 @@ mod tests {
                     GCode {
                         command: 'G',
                         major: 0,
-                        minor: 0,
+                        minor: 0.0,
                         text_value: None
                     },
                     GCode {
                         command: 'X',
                         major: 1,
-                        minor: 2,
+                        minor: 0.2,
                         text_value: None
                     }
                 ],
@@ -86,7 +86,7 @@ mod tests {
                 vec![GCode {
                     command: 'X',
                     major: 2,
-                    minor: 2,
+                    minor: 0.2,
                     text_value: None
                 }],
                 result.1
@@ -102,7 +102,7 @@ mod tests {
                 vec![GCode {
                     command: 'O',
                     major: 4968,
-                    minor: 0,
+                    minor: 0.0,
                     text_value: None
                 }],
                 result.1
@@ -114,11 +114,11 @@ mod tests {
 #[derive(Debug, PartialEq)]
 pub struct GCode {
     pub command: char,
-    pub major: usize,
-    pub minor: usize,
+    pub major: i32,
+    pub minor: f32,
     text_value: Option<String>,
 }
-type GCodeBlock = Vec<GCode>;
+pub type GCodeBlock = Vec<GCode>;
 pub type GCodeProgram = HashMap<i32, GCodeBlock>;
 
 pub fn parse_line(linenumber: i32, line: &str) -> Option<(i32, GCodeBlock)> {
@@ -147,6 +147,8 @@ pub fn parse_line(linenumber: i32, line: &str) -> Option<(i32, GCodeBlock)> {
         None => None,
     };
 
+    let resolution: f32 = 10.0;
+
     let mut gcodeblock = GCodeBlock::new();
 
     match cleaned_line {
@@ -164,25 +166,29 @@ pub fn parse_line(linenumber: i32, line: &str) -> Option<(i32, GCodeBlock)> {
                         };
                         match token.get(1..) {
                             Some(value) => {
-                                let parts = value
-                                    .split('.')
-                                    .into_iter()
-                                    .map(|v| match v.parse::<usize>() {
+                                let mut parts = value.split('.');
+                                let major = match parts.next() {
+                                    Some(v) => match v.parse::<i32>() {
                                         Ok(v) => v,
                                         Err(_) => 0,
-                                    })
-                                    .collect::<Vec<usize>>();
+                                    },
+                                    None => 0,
+                                };
+                                let minor = match parts.next() {
+                                    Some(v) => match value.parse::<f32>() {
+                                        Ok(v) => {
+                                            ((v * resolution) - (major as f32 * resolution))
+                                                / resolution
+                                        }
+                                        Err(_) => 0.0,
+                                    },
+                                    None => 0.0,
+                                };
 
                                 Some(GCode {
                                     command: command,
-                                    major: match parts.get(0) {
-                                        Some(v) => *v,
-                                        None => 0,
-                                    },
-                                    minor: match parts.get(1) {
-                                        Some(v) => *v,
-                                        None => 0,
-                                    },
+                                    major: major,
+                                    minor: minor,
                                     text_value: None,
                                 })
                             }
