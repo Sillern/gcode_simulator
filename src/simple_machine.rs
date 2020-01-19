@@ -1,3 +1,5 @@
+use std::sync::mpsc;
+use std::thread;
 mod gcode;
 
 fn fixedresolution_add(value: f32, increment: i32, resolution: i32) -> f32 {
@@ -21,26 +23,6 @@ fn fixedresolution_step(current: &mut f32, next: f32, resolution: i32) -> Option
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
-pub struct ToolState {
-    x: f32,
-    y: f32,
-    z: f32,
-    e: f32,
-    steps_per_unit_x: i32,
-    steps_per_unit_y: i32,
-    steps_per_unit_z: i32,
-    steps_per_unit_e: i32,
-    feedrate: i32,
-}
-
-pub struct SimpleMachine {
-    program: gcode::GCodeProgram,
-    pc: i32,
-    step: i32,
-    toolstate: ToolState,
-}
-
 #[derive(Debug)]
 enum Command {
     StepperX,
@@ -50,27 +32,75 @@ enum Command {
     Feedrate,
 }
 
+#[derive(Debug)]
+pub struct CommandEntry {
+    command: Command,
+    value: i32,
+    rate: f32,
+}
+
+pub fn start_machine(filepath: String) {
+    let (tx, rx) = mpsc::channel::<CommandEntry>();
+
+    let mut machine = SimpleMachine::new(filepath, tx);
+
+    let thread_handle = thread::spawn(move || {
+        let mut return_code = 0;
+        while return_code == 0 {
+            return_code = machine.process();
+        }
+    });
+
+    for _ in 0..10 {
+        println!("WorkItem: {:?}", rx.recv());
+    }
+
+    thread_handle.join().expect("Thread failed!");
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct ToolState {
+    x: f32,
+    y: f32,
+    z: f32,
+    e: f32,
+    feedrate: f32,
+    steps_per_unit_x: i32,
+    steps_per_unit_y: i32,
+    steps_per_unit_z: i32,
+    steps_per_unit_e: i32,
+}
+
+pub struct SimpleMachine {
+    program: gcode::GCodeProgram,
+    pc: i32,
+    step: i32,
+    queue: mpsc::Sender<CommandEntry>,
+    toolstate: ToolState,
+}
+
 impl SimpleMachine {
-    pub fn new(filepath: String) -> SimpleMachine {
+    pub fn new(filepath: String, queue: mpsc::Sender<CommandEntry>) -> SimpleMachine {
         SimpleMachine {
             program: gcode::parse(filepath),
             pc: 0,
             step: 1,
+            queue: queue,
             toolstate: ToolState {
                 x: 0.0,
                 y: 0.0,
                 z: 0.0,
                 e: 0.0,
+                feedrate: 1000.0,
                 steps_per_unit_x: 100,
                 steps_per_unit_y: 100,
                 steps_per_unit_z: 100,
                 steps_per_unit_e: 100,
-                feedrate: 1000,
             },
         }
     }
 
-    pub fn process(&mut self) -> i32 {
+    fn process(&mut self) -> i32 {
         match self.program.get(&self.pc) {
             Some(entry) => {
                 match &entry[0].command {
@@ -102,7 +132,7 @@ impl SimpleMachine {
                 'Y' => next.y = parameter.major as f32 + parameter.minor,
                 'Z' => next.z = parameter.major as f32 + parameter.minor,
                 'E' => next.e = parameter.major as f32 + parameter.minor,
-                'F' => next.feedrate = parameter.major,
+                'F' => next.feedrate = parameter.major as f32 + parameter.minor,
                 _ => println!("Unsupported parameter, {:?}", parameter),
             }
         }
@@ -111,13 +141,21 @@ impl SimpleMachine {
 
         if current.feedrate != next.feedrate {
             current.feedrate = next.feedrate;
-            self.add_to_queue((Command::Feedrate, current.feedrate, 0));
+            self.add_to_queue(CommandEntry {
+                command: Command::Feedrate,
+                value: 0,
+                rate: next.feedrate,
+            });
         }
 
         loop {
             // Queue stepper instructions
             match fixedresolution_step(&mut current.x, next.x, next.steps_per_unit_x) {
-                Some(direction) => self.add_to_queue((Command::StepperX, direction, next.feedrate)),
+                Some(direction) => self.add_to_queue(CommandEntry {
+                    command: Command::StepperX,
+                    value: direction,
+                    rate: next.feedrate,
+                }),
                 None => break,
             };
         }
@@ -125,7 +163,11 @@ impl SimpleMachine {
         loop {
             // Queue stepper instructions
             match fixedresolution_step(&mut current.y, next.y, next.steps_per_unit_x) {
-                Some(direction) => self.add_to_queue((Command::StepperX, direction, next.feedrate)),
+                Some(direction) => self.add_to_queue(CommandEntry {
+                    command: Command::StepperY,
+                    value: direction,
+                    rate: next.feedrate,
+                }),
                 None => break,
             };
         }
@@ -133,7 +175,11 @@ impl SimpleMachine {
         loop {
             // Queue stepper instructions
             match fixedresolution_step(&mut current.z, next.z, next.steps_per_unit_x) {
-                Some(direction) => self.add_to_queue((Command::StepperX, direction, next.feedrate)),
+                Some(direction) => self.add_to_queue(CommandEntry {
+                    command: Command::StepperZ,
+                    value: direction,
+                    rate: next.feedrate,
+                }),
                 None => break,
             };
         }
@@ -141,7 +187,11 @@ impl SimpleMachine {
         loop {
             // Queue stepper instructions
             match fixedresolution_step(&mut current.e, next.e, next.steps_per_unit_x) {
-                Some(direction) => self.add_to_queue((Command::StepperX, direction, next.feedrate)),
+                Some(direction) => self.add_to_queue(CommandEntry {
+                    command: Command::StepperE,
+                    value: direction,
+                    rate: next.feedrate,
+                }),
                 None => break,
             };
         }
@@ -157,7 +207,7 @@ impl SimpleMachine {
                 'Y' => next.y = parameter.major as f32 + parameter.minor,
                 'Z' => next.z = parameter.major as f32 + parameter.minor,
                 'E' => next.e = parameter.major as f32 + parameter.minor,
-                'F' => next.feedrate = parameter.major,
+                'F' => next.feedrate = parameter.major as f32 + parameter.minor,
                 _ => println!("Unsupported parameter, {:?}", parameter),
             }
         }
@@ -165,7 +215,11 @@ impl SimpleMachine {
         let mut current = self.toolstate.clone();
         if current.feedrate != next.feedrate {
             current.feedrate = next.feedrate;
-            self.add_to_queue((Command::Feedrate, current.feedrate, 0));
+            self.add_to_queue(CommandEntry {
+                command: Command::Feedrate,
+                value: 0,
+                rate: next.feedrate,
+            });
         }
 
         loop {
@@ -174,33 +228,41 @@ impl SimpleMachine {
             // Queue stepper instructions
             added_to_queue =
                 match fixedresolution_step(&mut current.x, next.x, next.steps_per_unit_x) {
-                    Some(direction) => {
-                        self.add_to_queue((Command::StepperX, direction, next.feedrate))
-                    }
+                    Some(direction) => self.add_to_queue(CommandEntry {
+                        command: Command::StepperX,
+                        value: direction,
+                        rate: next.feedrate,
+                    }),
                     None => added_to_queue,
                 };
 
             added_to_queue =
                 match fixedresolution_step(&mut current.y, next.y, next.steps_per_unit_x) {
-                    Some(direction) => {
-                        self.add_to_queue((Command::StepperY, direction, next.feedrate))
-                    }
+                    Some(direction) => self.add_to_queue(CommandEntry {
+                        command: Command::StepperY,
+                        value: direction,
+                        rate: next.feedrate,
+                    }),
                     None => added_to_queue,
                 };
 
             added_to_queue =
                 match fixedresolution_step(&mut current.z, next.z, next.steps_per_unit_x) {
-                    Some(direction) => {
-                        self.add_to_queue((Command::StepperZ, direction, next.feedrate))
-                    }
+                    Some(direction) => self.add_to_queue(CommandEntry {
+                        command: Command::StepperZ,
+                        value: direction,
+                        rate: next.feedrate,
+                    }),
                     None => added_to_queue,
                 };
 
             added_to_queue =
                 match fixedresolution_step(&mut current.e, next.e, next.steps_per_unit_x) {
-                    Some(direction) => {
-                        self.add_to_queue((Command::StepperE, direction, next.feedrate))
-                    }
+                    Some(direction) => self.add_to_queue(CommandEntry {
+                        command: Command::StepperE,
+                        value: direction,
+                        rate: next.feedrate,
+                    }),
                     None => added_to_queue,
                 };
 
@@ -210,7 +272,8 @@ impl SimpleMachine {
         }
     }
 
-    fn add_to_queue(&self, entry: (Command, i32, i32)) -> bool {
+    fn add_to_queue(&self, entry: CommandEntry) -> bool {
+        self.queue.send(entry).expect("Sent failed!");
         true
     }
 }
