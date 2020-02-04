@@ -1,6 +1,7 @@
+use crate::gcode;
+use crate::window;
 use std::sync::mpsc;
 use std::thread;
-mod gcode;
 
 fn fixedresolution_add(value: f32, increment: i32, resolution: i32) -> f32 {
     value + (increment as f32 / resolution as f32)
@@ -40,7 +41,7 @@ pub struct CommandEntry {
     value: f32,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SyncEntry {
     steps_x: i32,
     steps_y: i32,
@@ -49,12 +50,28 @@ pub struct SyncEntry {
     rate: f32,
 }
 
-pub fn start_machine(filepath: String) {
+impl SyncEntry {
+    fn new() -> Self {
+        SyncEntry {
+            steps_x: 0,
+            steps_y: 0,
+            steps_z: 0,
+            steps_e: 0,
+            rate: 0.0,
+        }
+    }
+}
+
+pub fn start_machine(
+    filepath: String,
+    toolstate: mpsc::Sender<SyncEntry>,
+    config_sync: mpsc::Sender<ToolConfig>,
+) {
     let (tx, rx) = mpsc::channel::<CommandEntry>();
     let (sync_tx, sync_rx) = mpsc::channel::<SyncEntry>();
 
     let machine_thread_handle = thread::spawn(move || {
-        let mut machine = SimpleMachine::new(filepath, tx.clone(), sync_rx);
+        let mut machine = SimpleMachine::new(filepath, tx.clone(), sync_rx, config_sync.clone());
 
         let mut return_code = 0;
         while return_code == 0 {
@@ -69,14 +86,10 @@ pub fn start_machine(filepath: String) {
     });
 
     let stepper_thread_handle = thread::spawn(move || {
-        let mut syncentry = SyncEntry {
-            steps_x: 0,
-            steps_y: 0,
-            steps_z: 0,
-            steps_e: 0,
-            rate: 0.0,
-        };
+        let mut syncentry = SyncEntry::new();
+        let mut gui_syncentry = SyncEntry::new();
         let mut return_code = 0;
+        let mut counter = 0;
         while return_code == 0 {
             match rx.recv() {
                 Ok(entry) => {
@@ -91,35 +104,48 @@ pub fn start_machine(filepath: String) {
                     match &entry.command {
                         Command::StepperX => {
                             syncentry.steps_x += sigmoid_value;
+                            gui_syncentry.steps_x += sigmoid_value;
                         }
                         Command::StepperY => {
-                            syncentry.steps_x += sigmoid_value;
+                            syncentry.steps_y += sigmoid_value;
+                            gui_syncentry.steps_y += sigmoid_value;
                         }
                         Command::StepperZ => {
-                            syncentry.steps_x += sigmoid_value;
+                            syncentry.steps_z += sigmoid_value;
+                            gui_syncentry.steps_z += sigmoid_value;
                         }
                         Command::StepperE => {
-                            syncentry.steps_x += sigmoid_value;
+                            syncentry.steps_e += sigmoid_value;
+                            gui_syncentry.steps_e += sigmoid_value;
                         }
                         Command::Feedrate => {
                             syncentry.rate = entry.value;
+                            gui_syncentry.rate = entry.value;
                         }
                         Command::Done => {
-                            sync_tx.send(syncentry).expect("Sent failed!");
+                            sync_tx.send(syncentry.clone()).expect("Sent failed!");
 
                             // Reset the counters
-                            syncentry = SyncEntry {
-                                steps_x: 0,
-                                steps_y: 0,
-                                steps_z: 0,
-                                steps_e: 0,
-                                rate: 0.0,
-                            };
+                            syncentry.steps_x = 0;
+                            syncentry.steps_y = 0;
+                            syncentry.steps_z = 0;
+                            syncentry.steps_e = 0;
                         }
                         Command::Quit => {
                             return_code = 1;
                         }
+                    };
+
+                    if (counter as f32) % (gui_syncentry.rate / 20.0) == 0.0 {
+                        toolstate.send(gui_syncentry.clone()).expect("Sent failed!");
+                        // Reset the counters
+                        gui_syncentry.steps_x = 0;
+                        gui_syncentry.steps_y = 0;
+                        gui_syncentry.steps_z = 0;
+                        gui_syncentry.steps_e = 0;
                     }
+
+                    counter += 1;
                 }
                 Err(something) => {
                     println!("Unable to fetch work item: {:?}", something);
@@ -135,19 +161,40 @@ pub fn start_machine(filepath: String) {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ToolState {
-    x: f32,
-    y: f32,
-    z: f32,
-    e: f32,
-    feedrate: f32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+    pub e: f32,
+    pub feedrate: f32,
+}
+impl ToolState {
+    pub fn new() -> Self {
+        ToolState {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            e: 0.0,
+            feedrate: 1000.0,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct ToolConfig {
-    steps_per_unit_x: i32,
-    steps_per_unit_y: i32,
-    steps_per_unit_z: i32,
-    steps_per_unit_e: i32,
+    pub steps_per_unit_x: i32,
+    pub steps_per_unit_y: i32,
+    pub steps_per_unit_z: i32,
+    pub steps_per_unit_e: i32,
+}
+impl ToolConfig {
+    pub fn new() -> Self {
+        ToolConfig {
+            steps_per_unit_x: 100,
+            steps_per_unit_y: 100,
+            steps_per_unit_z: 100,
+            steps_per_unit_e: 100,
+        }
+    }
 }
 
 pub struct SimpleMachine {
@@ -156,6 +203,7 @@ pub struct SimpleMachine {
     step: i32,
     queue: mpsc::Sender<CommandEntry>,
     sync: mpsc::Receiver<SyncEntry>,
+    config_sync: mpsc::Sender<ToolConfig>,
     toolstate: ToolState,
     toolconfig: ToolConfig,
 }
@@ -165,35 +213,33 @@ impl SimpleMachine {
         filepath: String,
         queue: mpsc::Sender<CommandEntry>,
         sync: mpsc::Receiver<SyncEntry>,
+        config_sync: mpsc::Sender<ToolConfig>,
     ) -> SimpleMachine {
-        SimpleMachine {
+        let construct = SimpleMachine {
             program: gcode::parse(filepath),
             pc: 0,
             step: 1,
             queue: queue,
             sync: sync,
-            toolstate: ToolState {
-                x: 0.0,
-                y: 0.0,
-                z: 0.0,
-                e: 0.0,
-                feedrate: 1000.0,
-            },
-            toolconfig: ToolConfig {
-                steps_per_unit_x: 100,
-                steps_per_unit_y: 100,
-                steps_per_unit_z: 100,
-                steps_per_unit_e: 100,
-            },
-        }
+            config_sync: config_sync,
+            toolstate: ToolState::new(),
+            toolconfig: ToolConfig::new(),
+        };
+        construct.config_sync.send(construct.toolconfig.clone());
+
+        return construct;
     }
 
-    fn update_toolstate(&mut self, entry: &SyncEntry) {
-        self.toolstate.x += entry.steps_x as f32 / self.toolconfig.steps_per_unit_x as f32;
-        self.toolstate.y += entry.steps_y as f32 / self.toolconfig.steps_per_unit_y as f32;
-        self.toolstate.z += entry.steps_z as f32 / self.toolconfig.steps_per_unit_z as f32;
-        self.toolstate.e += entry.steps_e as f32 / self.toolconfig.steps_per_unit_e as f32;
-        self.toolstate.feedrate = entry.rate;
+    pub fn update_toolstate(entry: &SyncEntry, toolconfig: &ToolConfig, toolstate: &mut ToolState) {
+        toolstate.x += entry.steps_x as f32 / toolconfig.steps_per_unit_x as f32;
+        toolstate.y += entry.steps_y as f32 / toolconfig.steps_per_unit_y as f32;
+        toolstate.z += entry.steps_z as f32 / toolconfig.steps_per_unit_z as f32;
+        toolstate.e += entry.steps_e as f32 / toolconfig.steps_per_unit_e as f32;
+        toolstate.feedrate = entry.rate;
+    }
+
+    fn set_toolstate(&mut self, entry: &SyncEntry) {
+        SimpleMachine::update_toolstate(&entry, &self.toolconfig, &mut self.toolstate);
     }
 
     fn process(&mut self) -> i32 {
@@ -223,7 +269,7 @@ impl SimpleMachine {
                     // Sync the current toolstate
                     match self.sync.recv() {
                         Ok(entry) => {
-                            self.update_toolstate(&entry);
+                            self.set_toolstate(&entry);
                             println!("Sync: WorkItem: {:?}, state: {:?}", &entry, &self.toolstate);
                         }
                         Err(_) => {

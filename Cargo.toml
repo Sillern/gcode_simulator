@@ -4,4 +4,4 @@ version = "0.1.0"
 authors = ["Sebastian Jegerås <jegeras@gmail.com>"]
 edition = "2018"
 [dependencies]
-image = "0.22"
+sfml = "0.15.1"
