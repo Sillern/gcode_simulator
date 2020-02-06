@@ -3,24 +3,95 @@ use crate::window;
 use std::sync::mpsc;
 use std::thread;
 
-fn fixedresolution_add(value: f32, increment: i32, resolution: i32) -> f32 {
-    value + (increment as f32 / resolution as f32)
+#[derive(Debug, Clone, Copy)]
+struct FixedResolution {
+    raw_value: i64,
+    resolution: i32,
 }
 
-fn fixedresolution_equal(value: f32, comp: f32, resolution: i32) -> bool {
-    let a = (value * resolution as f32) as i32;
-    let b = (comp * resolution as f32) as i32;
+impl FixedResolution {
+    pub fn new(value: f32, resolution: i32) -> Self {
+        Self {
+            raw_value: (value * resolution as f32) as i64,
+            resolution: resolution,
+        }
+    }
+    pub fn repr(&self) -> f32 {
+        return (self.raw_value as f32 / self.resolution as f32);
+    }
 
-    a == b
-}
+    pub fn increment(&self, direction: i32) -> FixedResolution {
+        return FixedResolution {
+            raw_value: self.raw_value + direction as i64,
+            resolution: self.resolution,
+        };
+    }
 
-fn fixedresolution_step(current: &mut f32, next: f32, resolution: i32) -> Option<i32> {
-    if !fixedresolution_equal(*current, next, resolution) {
-        let direction = if *current < next { 1 } else { -1 };
-        *current = fixedresolution_add(*current, direction, resolution);
-        Some(direction)
-    } else {
-        None
+    pub fn add(&self, value: FixedResolution) -> FixedResolution {
+        return FixedResolution {
+            raw_value: self.raw_value + value.raw_value,
+            resolution: self.resolution,
+        };
+    }
+
+    pub fn subtract(&self, value: FixedResolution) -> FixedResolution {
+        return FixedResolution {
+            raw_value: self.raw_value - value.raw_value,
+            resolution: self.resolution,
+        };
+    }
+
+    pub fn multiply_raw(&self, value: f32) -> FixedResolution {
+        return FixedResolution {
+            raw_value: ((self.raw_value as f32) * value) as i64,
+            resolution: self.resolution,
+        };
+    }
+    pub fn multiply(&self, value: FixedResolution) -> FixedResolution {
+        return FixedResolution {
+            raw_value: self.raw_value * value.raw_value,
+            resolution: self.resolution,
+        };
+    }
+
+    pub fn equal(&self, comp: &FixedResolution) -> bool {
+        self.raw_value == comp.raw_value
+    }
+
+    pub fn less_than(&self, comp: &FixedResolution) -> bool {
+        self.raw_value < comp.raw_value
+    }
+
+    pub fn next_value(&self, next: &FixedResolution) -> Option<FixedResolution> {
+        match self.get_direction(next) {
+            Some(direction) => Some(self.increment(direction)),
+            None => None,
+        }
+    }
+
+    pub fn get_direction(&self, next: &FixedResolution) -> Option<i32> {
+        if self.equal(next) {
+            None
+        } else if self.less_than(next) {
+            Some(1)
+        } else {
+            Some(-1)
+        }
+    }
+
+    pub fn lerp(
+        &self,
+        start_x: &FixedResolution,
+        start_y: &FixedResolution,
+        stop_x: &FixedResolution,
+        stop_y: &FixedResolution,
+    ) -> FixedResolution {
+        FixedResolution {
+            raw_value: (start_y.raw_value * (stop_x.raw_value - self.raw_value)
+                + stop_y.raw_value * (self.raw_value - start_x.raw_value))
+                / (stop_x.raw_value - start_x.raw_value),
+            resolution: stop_y.resolution,
+        }
     }
 }
 
@@ -248,7 +319,7 @@ impl SimpleMachine {
                 let command_sent = match &entry[0].command {
                     // Movement
                     'G' => match &entry[0].major {
-                        0 => self.movement_rapid(&entry),
+                        0 => self.movement_interpolated(&entry),
                         1 => self.movement_interpolated(&entry),
                         _ => {
                             println!("Unsupported move: {:?}", entry);
@@ -284,82 +355,6 @@ impl SimpleMachine {
         }
     }
 
-    fn movement_rapid(&self, parameters: &gcode::GCodeBlock) -> bool {
-        println!("Rapid movement");
-        let mut next = self.toolstate.clone();
-
-        for parameter in parameters.iter().skip(1) {
-            match parameter.command {
-                'X' => next.x = parameter.major as f32 + parameter.minor,
-                'Y' => next.y = parameter.major as f32 + parameter.minor,
-                'Z' => next.z = parameter.major as f32 + parameter.minor,
-                'E' => next.e = parameter.major as f32 + parameter.minor,
-                'F' => next.feedrate = parameter.major as f32 + parameter.minor,
-                _ => println!("Unsupported parameter, {:?}", parameter),
-            }
-        }
-
-        let mut current = self.toolstate.clone();
-
-        if current.feedrate != next.feedrate {
-            current.feedrate = next.feedrate;
-            self.add_to_queue(CommandEntry {
-                command: Command::Feedrate,
-                value: next.feedrate,
-            });
-        }
-
-        loop {
-            // Queue stepper instructions
-            match fixedresolution_step(&mut current.x, next.x, self.toolconfig.steps_per_unit_x) {
-                Some(direction) => self.add_to_queue(CommandEntry {
-                    command: Command::StepperX,
-                    value: direction as f32,
-                }),
-                None => break,
-            };
-        }
-
-        loop {
-            // Queue stepper instructions
-            match fixedresolution_step(&mut current.y, next.y, self.toolconfig.steps_per_unit_y) {
-                Some(direction) => self.add_to_queue(CommandEntry {
-                    command: Command::StepperY,
-                    value: direction as f32,
-                }),
-                None => break,
-            };
-        }
-
-        loop {
-            // Queue stepper instructions
-            match fixedresolution_step(&mut current.z, next.z, self.toolconfig.steps_per_unit_z) {
-                Some(direction) => self.add_to_queue(CommandEntry {
-                    command: Command::StepperZ,
-                    value: direction as f32,
-                }),
-                None => break,
-            };
-        }
-
-        loop {
-            // Queue stepper instructions
-            match fixedresolution_step(&mut current.e, next.e, self.toolconfig.steps_per_unit_e) {
-                Some(direction) => self.add_to_queue(CommandEntry {
-                    command: Command::StepperE,
-                    value: direction as f32,
-                }),
-                None => break,
-            };
-        }
-
-        self.add_to_queue(CommandEntry {
-            command: Command::Done,
-            value: 0.0,
-        });
-        return true;
-    }
-
     fn movement_interpolated(&self, parameters: &gcode::GCodeBlock) -> bool {
         println!("Interpolated movement");
         let mut next = self.toolstate.clone();
@@ -385,62 +380,119 @@ impl SimpleMachine {
             });
         }
 
+        let start_x = FixedResolution::new(current.x, self.toolconfig.steps_per_unit_x);
+        let start_y = FixedResolution::new(current.y, self.toolconfig.steps_per_unit_y);
+        let start_z = FixedResolution::new(current.z, self.toolconfig.steps_per_unit_z);
+        let start_e = FixedResolution::new(current.e, self.toolconfig.steps_per_unit_e);
+        let mut current_x = start_x.clone();
+        let mut current_y = start_y.clone();
+        let mut current_z = start_z.clone();
+        let mut current_e = start_e.clone();
+        let stop_x = FixedResolution::new(next.x, self.toolconfig.steps_per_unit_x);
+        let stop_y = FixedResolution::new(next.y, self.toolconfig.steps_per_unit_y);
+        let stop_z = FixedResolution::new(next.z, self.toolconfig.steps_per_unit_z);
+        let stop_e = FixedResolution::new(next.e, self.toolconfig.steps_per_unit_e);
+
+        let movement_vector = (
+            stop_x.subtract(start_x),
+            stop_y.subtract(start_y),
+            stop_z.subtract(start_z),
+            stop_e.subtract(start_e),
+        );
+
+        let movement_amplitude = ((movement_vector.0.raw_value * movement_vector.0.raw_value
+            + movement_vector.1.raw_value * movement_vector.1.raw_value
+            + movement_vector.2.raw_value * movement_vector.2.raw_value
+            + movement_vector.3.raw_value * movement_vector.3.raw_value)
+            as f32)
+            .sqrt();
+
+        let mut step = 0;
         loop {
-            let mut added_to_queue = false;
+            let factor = (step as f32) / movement_amplitude;
+            let normalized_vector = (
+                start_x.add(movement_vector.0.multiply_raw(factor)),
+                start_y.add(movement_vector.1.multiply_raw(factor)),
+                start_z.add(movement_vector.2.multiply_raw(factor)),
+                start_e.add(movement_vector.3.multiply_raw(factor)),
+            );
 
-            // Queue stepper instructions
-            added_to_queue = match fixedresolution_step(
-                &mut current.x,
-                next.x,
-                self.toolconfig.steps_per_unit_x,
-            ) {
-                Some(direction) => self.add_to_queue(CommandEntry {
-                    command: Command::StepperX,
-                    value: direction as f32,
-                }),
-                None => added_to_queue,
+            let mut added_to_queue = 0;
+            added_to_queue += match current_x.get_direction(&normalized_vector.0) {
+                Some(direction) => {
+                    current_x = current_x.increment(direction);
+                    self.add_to_queue(CommandEntry {
+                        command: Command::StepperX,
+                        value: direction as f32,
+                    })
+                }
+                None => {
+                    if current_x.equal(&stop_x) {
+                        0
+                    } else {
+                        1
+                    }
+                }
             };
 
-            added_to_queue = match fixedresolution_step(
-                &mut current.y,
-                next.y,
-                self.toolconfig.steps_per_unit_y,
-            ) {
-                Some(direction) => self.add_to_queue(CommandEntry {
-                    command: Command::StepperY,
-                    value: direction as f32,
-                }),
-                None => added_to_queue,
+            added_to_queue += match current_y.get_direction(&normalized_vector.1) {
+                Some(direction) => {
+                    current_y = current_y.increment(direction);
+                    self.add_to_queue(CommandEntry {
+                        command: Command::StepperY,
+                        value: direction as f32,
+                    })
+                }
+                None => {
+                    if current_y.equal(&stop_y) {
+                        0
+                    } else {
+                        1
+                    }
+                }
             };
 
-            added_to_queue = match fixedresolution_step(
-                &mut current.z,
-                next.z,
-                self.toolconfig.steps_per_unit_z,
-            ) {
-                Some(direction) => self.add_to_queue(CommandEntry {
-                    command: Command::StepperZ,
-                    value: direction as f32,
-                }),
-                None => added_to_queue,
+            added_to_queue += match current_z.get_direction(&normalized_vector.2) {
+                Some(direction) => {
+                    current_z = current_z.increment(direction);
+                    self.add_to_queue(CommandEntry {
+                        command: Command::StepperZ,
+                        value: direction as f32,
+                    })
+                }
+                None => {
+                    if current_z.equal(&stop_z) {
+                        0
+                    } else {
+                        1
+                    }
+                }
             };
 
-            added_to_queue = match fixedresolution_step(
-                &mut current.e,
-                next.e,
-                self.toolconfig.steps_per_unit_e,
-            ) {
-                Some(direction) => self.add_to_queue(CommandEntry {
-                    command: Command::StepperE,
-                    value: direction as f32,
-                }),
-                None => added_to_queue,
+            added_to_queue += match current_e.get_direction(&normalized_vector.3) {
+                Some(direction) => {
+                    current_e = current_e.increment(direction);
+                    self.add_to_queue(CommandEntry {
+                        command: Command::StepperE,
+                        value: direction as f32,
+                    })
+                }
+                None => {
+                    if current_e.equal(&stop_e) {
+                        0
+                    } else {
+                        1
+                    }
+                }
             };
 
-            if !added_to_queue {
+            if step > movement_amplitude as i32 {
                 break;
             }
+
+            step += 1;
         }
+
         self.add_to_queue(CommandEntry {
             command: Command::Done,
             value: 0.0,
@@ -449,8 +501,8 @@ impl SimpleMachine {
         return true;
     }
 
-    fn add_to_queue(&self, entry: CommandEntry) -> bool {
+    fn add_to_queue(&self, entry: CommandEntry) -> i32 {
         self.queue.send(entry).expect("Sent failed!");
-        true
+        1
     }
 }
