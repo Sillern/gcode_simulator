@@ -409,7 +409,11 @@ impl SimpleMachine {
 
         let mut step = 0;
         loop {
-            let factor = (step as f32) / movement_amplitude;
+            let factor = if movement_amplitude != 0.0 {
+                (step as f32) / movement_amplitude
+            } else {
+                movement_amplitude
+            };
             let normalized_vector = (
                 start_x.add(movement_vector.0.multiply_raw(factor)),
                 start_y.add(movement_vector.1.multiply_raw(factor)),
