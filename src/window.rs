@@ -13,7 +13,11 @@ use sfml::window::{Event, Key, Style};
 
 impl simple_machine::ToolState {
     pub fn draw(&self) -> CircleShape {
-        let toolsize = if self.z != 0.0 { self.z } else { 10.0 };
+        let toolsize = if self.z == 0.0 {
+            2.0
+        } else {
+            (self.z + 1.0) * 2.0
+        };
         let mut head = CircleShape::new(toolsize, 100);
         head.set_position((self.x, self.y));
         head.set_fill_color(Color::RED);

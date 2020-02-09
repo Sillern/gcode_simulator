@@ -1,5 +1,6 @@
 use crate::gcode;
 use crate::window;
+use std::f32;
 use std::sync::mpsc;
 use std::thread;
 
@@ -137,7 +138,7 @@ pub fn start_machine(
     filepath: String,
     toolstate: mpsc::Sender<SyncEntry>,
     config_sync: mpsc::Sender<ToolConfig>,
-) {
+) -> Vec<thread::JoinHandle<()>> {
     let (tx, rx) = mpsc::channel::<CommandEntry>();
     let (sync_tx, sync_rx) = mpsc::channel::<SyncEntry>();
 
@@ -207,7 +208,7 @@ pub fn start_machine(
                         }
                     };
 
-                    if (counter as f32) % (gui_syncentry.rate / 20.0) == 0.0 {
+                    if (counter as f32) % (gui_syncentry.rate / 40.0) == 0.0 {
                         toolstate.send(gui_syncentry.clone()).expect("Sent failed!");
                         // Reset the counters
                         gui_syncentry.steps_x = 0;
@@ -226,8 +227,7 @@ pub fn start_machine(
         }
     });
 
-    machine_thread_handle.join().expect("Thread failed!");
-    stepper_thread_handle.join().expect("Thread failed!");
+    return vec![machine_thread_handle, stepper_thread_handle];
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -321,6 +321,8 @@ impl SimpleMachine {
                     'G' => match &entry[0].major {
                         0 => self.movement_interpolated(&entry),
                         1 => self.movement_interpolated(&entry),
+                        2 => self.movement_arc(&entry, true),
+                        3 => self.movement_arc(&entry, false),
                         _ => {
                             println!("Unsupported move: {:?}", entry);
                             false
@@ -495,6 +497,130 @@ impl SimpleMachine {
             }
 
             step += 1;
+        }
+
+        self.add_to_queue(CommandEntry {
+            command: Command::Done,
+            value: 0.0,
+        });
+
+        return true;
+    }
+
+    fn movement_arc(&self, parameters: &gcode::GCodeBlock, clockwise: bool) -> bool {
+        println!("Arc movement");
+        let mut next = self.toolstate.clone();
+        let mut center: (f32, f32) = (0.0, 0.0);
+        for parameter in parameters.iter().skip(1) {
+            match parameter.command {
+                'X' => next.x = parameter.major as f32 + parameter.minor,
+                'Y' => next.y = parameter.major as f32 + parameter.minor,
+                'I' => center.0 = parameter.major as f32 + parameter.minor,
+                'J' => center.1 = parameter.major as f32 + parameter.minor,
+                'E' => next.e = parameter.major as f32 + parameter.minor,
+                'F' => next.feedrate = parameter.major as f32 + parameter.minor,
+                _ => println!("Unsupported parameter, {:?}", parameter),
+            }
+        }
+
+        let mut current = self.toolstate.clone();
+
+        let radius = (center.0 * center.0 + center.1 * center.1).sqrt();
+
+        let mid_x = (next.x - current.x - center.0);
+        let mid_y = (next.y - current.y - center.1);
+
+        let mut angle_clockwise =
+            (center.1 * mid_x + center.0 * mid_y).atan2(center.1 * mid_y - center.0 * mid_x);
+
+        let arc_length = angle_clockwise * radius;
+
+        let mut step = FixedResolution::new(0.0, self.toolconfig.steps_per_unit_x);
+        let stop = FixedResolution::new(arc_length, self.toolconfig.steps_per_unit_x);
+
+        let start_x = FixedResolution::new(current.x, self.toolconfig.steps_per_unit_x);
+        let start_y = FixedResolution::new(current.y, self.toolconfig.steps_per_unit_y);
+        let center_x = FixedResolution::new(current.x + center.0, self.toolconfig.steps_per_unit_x);
+        let center_y = FixedResolution::new(current.y + center.1, self.toolconfig.steps_per_unit_y);
+        let mut current_x = start_x.clone();
+        let mut current_y = start_y.clone();
+        let stop_x = FixedResolution::new(next.x, self.toolconfig.steps_per_unit_x);
+        let stop_y = FixedResolution::new(next.y, self.toolconfig.steps_per_unit_y);
+
+        if current.feedrate != next.feedrate {
+            current.feedrate = next.feedrate;
+            self.add_to_queue(CommandEntry {
+                command: Command::Feedrate,
+                value: next.feedrate,
+            });
+        }
+
+        let mut iteration = 0;
+        loop {
+            let mut added_to_queue = 0;
+            iteration += 1;
+            added_to_queue += match step.get_direction(&stop) {
+                Some(direction) => {
+                    step = step.increment(direction);
+                    let dir = if clockwise {
+                        direction as f32
+                    } else {
+                        -1.0 * direction as f32
+                    };
+
+                    let step_angle = dir * step.repr() / radius;
+
+                    let step_x = FixedResolution::new(
+                        direction as f32 * radius * step_angle.cos(),
+                        self.toolconfig.steps_per_unit_x,
+                    );
+                    let step_y = FixedResolution::new(
+                        direction as f32 * radius * step_angle.sin(),
+                        self.toolconfig.steps_per_unit_y,
+                    );
+                    let next_x = center_x.subtract(step_x);
+                    let next_y = center_y.subtract(step_y);
+
+                    match current_x.get_direction(&next_x) {
+                        Some(direction) => {
+                            current_x = current_x.increment(direction);
+                            self.add_to_queue(CommandEntry {
+                                command: Command::StepperX,
+                                value: direction as f32,
+                            });
+                        }
+                        None => {}
+                    };
+
+                    match current_y.get_direction(&next_y) {
+                        Some(direction) => {
+                            current_y = current_y.increment(direction);
+                            self.add_to_queue(CommandEntry {
+                                command: Command::StepperY,
+                                value: direction as f32,
+                            });
+                        }
+                        None => {}
+                    };
+
+                    if current_x.equal(&stop_x) && current_y.equal(&stop_y) {
+                        0
+                    } else {
+                        1
+                    }
+                }
+                None => {
+                    if step.equal(&stop) {
+                        0
+                    } else {
+                        1
+                    }
+                }
+            };
+
+            if step.equal(&stop) {
+                break;
+            }
         }
 
         self.add_to_queue(CommandEntry {
