@@ -1,5 +1,4 @@
 use crate::gcode;
-use crate::window;
 use std::f32;
 use std::sync::mpsc;
 use std::thread;
@@ -18,7 +17,7 @@ impl FixedResolution {
         }
     }
     pub fn repr(&self) -> f32 {
-        return (self.raw_value as f32 / self.resolution as f32);
+        return self.raw_value as f32 / self.resolution as f32;
     }
 
     pub fn increment(&self, direction: i32) -> FixedResolution {
@@ -48,12 +47,6 @@ impl FixedResolution {
             resolution: self.resolution,
         };
     }
-    pub fn multiply(&self, value: FixedResolution) -> FixedResolution {
-        return FixedResolution {
-            raw_value: self.raw_value * value.raw_value,
-            resolution: self.resolution,
-        };
-    }
 
     pub fn equal(&self, comp: &FixedResolution) -> bool {
         self.raw_value == comp.raw_value
@@ -63,13 +56,6 @@ impl FixedResolution {
         self.raw_value < comp.raw_value
     }
 
-    pub fn next_value(&self, next: &FixedResolution) -> Option<FixedResolution> {
-        match self.get_direction(next) {
-            Some(direction) => Some(self.increment(direction)),
-            None => None,
-        }
-    }
-
     pub fn get_direction(&self, next: &FixedResolution) -> Option<i32> {
         if self.equal(next) {
             None
@@ -77,21 +63,6 @@ impl FixedResolution {
             Some(1)
         } else {
             Some(-1)
-        }
-    }
-
-    pub fn lerp(
-        &self,
-        start_x: &FixedResolution,
-        start_y: &FixedResolution,
-        stop_x: &FixedResolution,
-        stop_y: &FixedResolution,
-    ) -> FixedResolution {
-        FixedResolution {
-            raw_value: (start_y.raw_value * (stop_x.raw_value - self.raw_value)
-                + stop_y.raw_value * (self.raw_value - start_x.raw_value))
-                / (stop_x.raw_value - start_x.raw_value),
-            resolution: stop_y.resolution,
         }
     }
 }
@@ -208,7 +179,7 @@ pub fn start_machine(
                         }
                     };
 
-                    if (counter as f32) % (gui_syncentry.rate / 40.0) == 0.0 {
+                    if (counter as f32) % (10.0) == 0.0 {
                         toolstate.send(gui_syncentry.clone()).expect("Sent failed!");
                         // Reset the counters
                         gui_syncentry.steps_x = 0;
@@ -260,9 +231,9 @@ pub struct ToolConfig {
 impl ToolConfig {
     pub fn new() -> Self {
         ToolConfig {
-            steps_per_unit_x: 100,
-            steps_per_unit_y: 100,
-            steps_per_unit_z: 100,
+            steps_per_unit_x: 10,
+            steps_per_unit_y: 10,
+            steps_per_unit_z: 10,
             steps_per_unit_e: 100,
         }
     }
@@ -296,7 +267,10 @@ impl SimpleMachine {
             toolstate: ToolState::new(),
             toolconfig: ToolConfig::new(),
         };
-        construct.config_sync.send(construct.toolconfig.clone());
+        construct
+            .config_sync
+            .send(construct.toolconfig.clone())
+            .expect("Sent failed!");
 
         return construct;
     }
@@ -423,8 +397,7 @@ impl SimpleMachine {
                 start_e.add(movement_vector.3.multiply_raw(factor)),
             );
 
-            let mut added_to_queue = 0;
-            added_to_queue += match current_x.get_direction(&normalized_vector.0) {
+            match current_x.get_direction(&normalized_vector.0) {
                 Some(direction) => {
                     current_x = current_x.increment(direction);
                     self.add_to_queue(CommandEntry {
@@ -441,7 +414,7 @@ impl SimpleMachine {
                 }
             };
 
-            added_to_queue += match current_y.get_direction(&normalized_vector.1) {
+            match current_y.get_direction(&normalized_vector.1) {
                 Some(direction) => {
                     current_y = current_y.increment(direction);
                     self.add_to_queue(CommandEntry {
@@ -458,7 +431,7 @@ impl SimpleMachine {
                 }
             };
 
-            added_to_queue += match current_z.get_direction(&normalized_vector.2) {
+            match current_z.get_direction(&normalized_vector.2) {
                 Some(direction) => {
                     current_z = current_z.increment(direction);
                     self.add_to_queue(CommandEntry {
@@ -475,7 +448,7 @@ impl SimpleMachine {
                 }
             };
 
-            added_to_queue += match current_e.get_direction(&normalized_vector.3) {
+            match current_e.get_direction(&normalized_vector.3) {
                 Some(direction) => {
                     current_e = current_e.increment(direction);
                     self.add_to_queue(CommandEntry {
@@ -527,10 +500,10 @@ impl SimpleMachine {
 
         let radius = (center.0 * center.0 + center.1 * center.1).sqrt();
 
-        let mid_x = (next.x - current.x - center.0);
-        let mid_y = (next.y - current.y - center.1);
+        let mid_x = next.x - current.x - center.0;
+        let mid_y = next.y - current.y - center.1;
 
-        let mut angle_clockwise =
+        let angle_clockwise =
             (center.1 * mid_x + center.0 * mid_y).atan2(center.1 * mid_y - center.0 * mid_x);
 
         let arc_length = angle_clockwise * radius;
@@ -555,11 +528,8 @@ impl SimpleMachine {
             });
         }
 
-        let mut iteration = 0;
         loop {
-            let mut added_to_queue = 0;
-            iteration += 1;
-            added_to_queue += match step.get_direction(&stop) {
+            match step.get_direction(&stop) {
                 Some(direction) => {
                     step = step.increment(direction);
                     let dir = if clockwise {

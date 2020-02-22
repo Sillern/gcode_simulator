@@ -10,7 +10,7 @@ fn main() {
     let (toolstate_tx, toolstate_rx) = mpsc::channel::<simple_machine::SyncEntry>();
     let (config_tx, config_rx) = mpsc::channel::<simple_machine::ToolConfig>();
 
-    let mut threads = match args.get(1) {
+    let threads = match args.get(1) {
         Some(argument) => {
             let filepath = argument.to_string();
 
@@ -26,8 +26,8 @@ fn main() {
         window::setup_window(toolstate_rx, config_rx);
     });
 
-    gui_thread_handle.join().expect("Thread failed!");
     for thread_handle in threads {
         thread_handle.join().expect("Thread failed!");
     }
+    gui_thread_handle.join().expect("Thread failed!");
 }

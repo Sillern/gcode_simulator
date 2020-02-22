@@ -1,31 +1,90 @@
 use crate::simple_machine;
-use std::env;
-use std::f32::consts::PI;
 use std::sync::mpsc;
 
 extern crate sfml;
 
 use sfml::graphics::{
-    CircleShape, Color, Drawable, RectangleShape, RenderStates, RenderTarget, RenderWindow, Shape,
-    Transformable,
+    Color, Drawable, Image, RenderStates, RenderTarget, RenderWindow, Sprite, Texture,
 };
+use sfml::system::SfBox;
 use sfml::window::{Event, Key, Style};
 
-impl simple_machine::ToolState {
-    pub fn draw(&self) -> CircleShape {
-        let toolsize = if self.z == 0.0 {
-            2.0
-        } else {
-            (self.z + 1.0) * 2.0
+#[derive(Debug, PartialEq)]
+struct Position {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+struct ToolTrail {
+    trail: Vec<Position>,
+    tool: simple_machine::ToolState,
+    texture: Option<SfBox<Texture>>,
+}
+
+impl ToolTrail {
+    pub fn new() -> Self {
+        ToolTrail {
+            trail: vec![],
+            tool: simple_machine::ToolState::new(),
+            texture: Texture::new(800, 600),
+        }
+    }
+
+    pub fn add(&mut self, tool: &simple_machine::ToolState) {
+        self.trail.push(Position {
+            x: tool.x,
+            y: tool.y,
+            z: tool.z,
+        });
+
+        self.tool = tool.clone();
+    }
+
+    pub fn update_texture(&mut self) {
+        match Image::from_color(800, 600, Color::WHITE) {
+            Some(mut image) => {
+                let scale = 2.0;
+                for pos in &self.trail {
+                    if pos.z < 1.0 {
+                        image.set_pixel(
+                            (scale * pos.x) as u32,
+                            (scale * pos.y) as u32,
+                            Color::BLUE,
+                        );
+                    }
+                }
+
+                image.set_pixel(
+                    (scale * self.tool.x) as u32,
+                    (scale * self.tool.y) as u32,
+                    Color::RED,
+                );
+
+                match &mut self.texture {
+                    Some(texture) => {
+                        texture.update_from_image(&image, 0, 0);
+                    }
+                    None => (),
+                }
+            }
+            None => (),
+        }
+    }
+
+    pub fn draw(&self) -> Sprite {
+        let mut sprite = Sprite::new();
+        sprite.set_color(Color::WHITE);
+
+        match &self.texture {
+            Some(texture) => sprite.set_texture(&texture, true),
+            None => (),
         };
-        let mut head = CircleShape::new(toolsize, 100);
-        head.set_position((self.x, self.y));
-        head.set_fill_color(Color::RED);
-        return head;
+        return sprite;
     }
 }
 
-impl Drawable for simple_machine::ToolState {
+impl Drawable for ToolTrail {
     fn draw<'a: 'shader, 'texture, 'shader, 'shader_texture>(
         &'a self,
         render_target: &mut dyn RenderTarget,
@@ -53,6 +112,7 @@ pub fn setup_window(
 
     let mut is_running = true;
     let mut current_state = simple_machine::ToolState::new();
+    let mut tooltrail = ToolTrail::new();
 
     while is_running {
         while let Some(event) = window.poll_event() {
@@ -70,7 +130,7 @@ pub fn setup_window(
                 println!("GUI got config sync: {:?}", &entry);
                 toolconfig = entry;
             }
-            Err(something) => (),
+            Err(_) => (),
         }
 
         match toolstate.recv() {
@@ -80,15 +140,17 @@ pub fn setup_window(
                     &toolconfig,
                     &mut current_state,
                 );
+                tooltrail.add(&current_state);
             }
-            Err(something) => {
+            Err(_) => {
                 //println!("Unable to fetch work item: {:?}", something);
                 is_running = false;
             }
         }
 
+        tooltrail.update_texture();
         window.clear(Color::WHITE);
-        window.draw(&current_state);
+        window.draw(&tooltrail);
         window.display()
     }
 }
