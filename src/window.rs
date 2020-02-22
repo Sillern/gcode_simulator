@@ -41,24 +41,39 @@ impl ToolTrail {
         self.tool = tool.clone();
     }
 
+    fn draw_square(image: &mut Image, x: u32, y: u32) {
+        image.set_pixel(x, y, Color::RED);
+        image.set_pixel(x, y + 1, Color::RED);
+        image.set_pixel(x, y - 1, Color::RED);
+
+        image.set_pixel(x + 1, y, Color::RED);
+        image.set_pixel(x + 1, y + 1, Color::RED);
+        image.set_pixel(x + 1, y - 1, Color::RED);
+
+        image.set_pixel(x - 1, y, Color::RED);
+        image.set_pixel(x - 1, y + 1, Color::RED);
+        image.set_pixel(x - 1, y - 1, Color::RED);
+    }
+
     pub fn update_texture(&mut self) {
         match Image::from_color(800, 600, Color::WHITE) {
             Some(mut image) => {
-                let scale = 2.0;
+                let offset_x = 10;
+                let offset_y = 10;
                 for pos in &self.trail {
                     if pos.z < 1.0 {
                         image.set_pixel(
-                            (scale * pos.x) as u32,
-                            (scale * pos.y) as u32,
+                            offset_x + pos.x as u32,
+                            offset_y + pos.y as u32,
                             Color::BLUE,
                         );
                     }
                 }
 
-                image.set_pixel(
-                    (scale * self.tool.x) as u32,
-                    (scale * self.tool.y) as u32,
-                    Color::RED,
+                ToolTrail::draw_square(
+                    &mut image,
+                    offset_x + self.tool.x as u32,
+                    offset_y + self.tool.y as u32,
                 );
 
                 match &mut self.texture {
@@ -113,6 +128,8 @@ pub fn setup_window(
     let mut is_running = true;
     let mut current_state = simple_machine::ToolState::new();
     let mut tooltrail = ToolTrail::new();
+    let mut sample = 0;
+    let sample_frequency = 50;
 
     while is_running {
         while let Some(event) = window.poll_event() {
@@ -141,6 +158,7 @@ pub fn setup_window(
                     &mut current_state,
                 );
                 tooltrail.add(&current_state);
+                sample += 1
             }
             Err(_) => {
                 //println!("Unable to fetch work item: {:?}", something);
@@ -148,9 +166,11 @@ pub fn setup_window(
             }
         }
 
-        tooltrail.update_texture();
-        window.clear(Color::WHITE);
-        window.draw(&tooltrail);
-        window.display()
+        if sample % sample_frequency == 0 {
+            tooltrail.update_texture();
+            window.clear(Color::WHITE);
+            window.draw(&tooltrail);
+            window.display()
+        }
     }
 }

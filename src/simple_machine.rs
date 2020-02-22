@@ -179,14 +179,13 @@ pub fn start_machine(
                         }
                     };
 
-                    if (counter as f32) % (10.0) == 0.0 {
-                        toolstate.send(gui_syncentry.clone()).expect("Sent failed!");
-                        // Reset the counters
-                        gui_syncentry.steps_x = 0;
-                        gui_syncentry.steps_y = 0;
-                        gui_syncentry.steps_z = 0;
-                        gui_syncentry.steps_e = 0;
-                    }
+                    toolstate.send(gui_syncentry.clone()).expect("Sent failed!");
+
+                    // Reset the counters
+                    gui_syncentry.steps_x = 0;
+                    gui_syncentry.steps_y = 0;
+                    gui_syncentry.steps_z = 0;
+                    gui_syncentry.steps_e = 0;
 
                     counter += 1;
                 }
