@@ -62,19 +62,23 @@ impl ToolTrail {
                 let offset_y = 10;
                 for pos in &self.trail {
                     if pos.z < 1.0 {
-                        image.set_pixel(
-                            offset_x + pos.x as u32,
-                            offset_y + pos.y as u32,
-                            Color::BLUE,
-                        );
+                        if ((pos.x > 0.0) && (pos.y > 0.0)) {
+                            image.set_pixel(
+                                offset_x + pos.x as u32,
+                                offset_y + pos.y as u32,
+                                Color::BLUE,
+                            );
+                        }
                     }
                 }
 
-                ToolTrail::draw_square(
-                    &mut image,
-                    offset_x + self.tool.x as u32,
-                    offset_y + self.tool.y as u32,
-                );
+                if ((self.tool.x > 0.0) && (self.tool.y > 0.0)) {
+                    ToolTrail::draw_square(
+                        &mut image,
+                        offset_x + self.tool.x as u32,
+                        offset_y + self.tool.y as u32,
+                    );
+                }
 
                 match &mut self.texture {
                     Some(texture) => {
@@ -129,7 +133,7 @@ pub fn setup_window(
     let mut current_state = simple_machine::ToolState::new();
     let mut tooltrail = ToolTrail::new();
     let mut sample = 0;
-    let sample_frequency = 50;
+    let sample_frequency = 400;
 
     while is_running {
         while let Some(event) = window.poll_event() {

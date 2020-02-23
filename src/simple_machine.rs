@@ -1,5 +1,6 @@
 use crate::gcode;
 use std::f32;
+use std::f32::consts::PI;
 use std::sync::mpsc;
 use std::thread;
 
@@ -230,10 +231,101 @@ pub struct ToolConfig {
 impl ToolConfig {
     pub fn new() -> Self {
         ToolConfig {
-            steps_per_unit_x: 10,
-            steps_per_unit_y: 10,
-            steps_per_unit_z: 10,
+            steps_per_unit_x: 100,
+            steps_per_unit_y: 100,
+            steps_per_unit_z: 100,
             steps_per_unit_e: 100,
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+struct Position {
+    x: f32,
+    y: f32,
+}
+
+impl Position {
+    pub fn new(x: f32, y: f32) -> Self {
+        let resolution = 1000.0;
+        Position {
+            x: (((x * resolution) as i64) as f32) / resolution,
+            y: (((y * resolution) as i64) as f32) / resolution,
+        }
+    }
+}
+
+fn calculate_angles(start_pos: Position, end_pos: Position, center: Position) -> (f32, f32, f32) {
+    let radius = (center.x * center.x + center.y * center.y).sqrt();
+
+    let start_angle = (-1.0 * center.y).atan2(-1.0 * center.x);
+    let stop_angle =
+        (end_pos.y - (start_pos.y + center.y)).atan2(end_pos.x - (start_pos.x + center.x));
+
+    return (radius, start_angle, stop_angle);
+}
+
+fn calculate_units(start_angle: f32, stop_angle: f32) -> (Position, Position) {
+    let start_unit = Position::new(start_angle.cos(), start_angle.sin());
+    let stop_unit = Position::new(stop_angle.cos(), stop_angle.sin());
+    return (start_unit, stop_unit);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_calculate_units() {
+        {
+            let (_, start_angle, stop_angle) = calculate_angles(
+                Position { x: 10.0, y: 10.0 },
+                Position { x: 20.0, y: 20.0 },
+                Position { x: 0.0, y: 10.0 },
+            );
+
+            let result = calculate_units(start_angle, stop_angle);
+
+            assert_eq!(Position { x: 0.0, y: -1.0 }, result.0);
+            assert_eq!(Position { x: 1.0, y: 0.0 }, result.1);
+        }
+        {
+            let (_, start_angle, stop_angle) = calculate_angles(
+                Position { x: 30.0, y: 30.0 },
+                Position { x: 40.0, y: 40.0 },
+                Position { x: 10.0, y: 0.0 },
+            );
+
+            let result = calculate_units(start_angle, stop_angle);
+
+            assert_eq!(Position { x: -1.0, y: 0.0 }, result.0);
+            assert_eq!(Position { x: 0.0, y: 1.0 }, result.1);
+        }
+    }
+
+    #[test]
+    fn test_calculate_angles() {
+        {
+            let (radius, start_angle, stop_angle) = calculate_angles(
+                Position { x: 10.0, y: 10.0 },
+                Position { x: 20.0, y: 20.0 },
+                Position { x: 0.0, y: 10.0 },
+            );
+
+            assert_eq!(-0.5 * PI, start_angle);
+            assert_eq!(0.0, stop_angle);
+            assert_eq!(10.0, radius);
+        }
+        {
+            let (radius, start_angle, stop_angle) = calculate_angles(
+                Position { x: 30.0, y: 30.0 },
+                Position { x: 40.0, y: 40.0 },
+                Position { x: 10.0, y: 0.0 },
+            );
+
+            assert_eq!(-1.0 * PI, start_angle);
+            assert_eq!(0.5 * PI, stop_angle);
+            assert_eq!(10.0, radius);
         }
     }
 }
@@ -497,18 +589,21 @@ impl SimpleMachine {
 
         let mut current = self.toolstate.clone();
 
-        let radius = (center.0 * center.0 + center.1 * center.1).sqrt();
+        let (radius, start_angle, raw_stop_angle) = calculate_angles(
+            Position::new(current.x, current.y),
+            Position::new(next.x, next.y),
+            Position::new(center.0, center.1),
+        );
+        let stop_angle = raw_stop_angle - if clockwise { 0.0 } else { 2.0 * PI };
 
-        let mid_x = next.x - current.x - center.0;
-        let mid_y = next.y - current.y - center.1;
-
-        let angle_clockwise =
-            (center.1 * mid_x + center.0 * mid_y).atan2(center.1 * mid_y - center.0 * mid_x);
-
-        let arc_length = angle_clockwise * radius;
-
-        let mut step = FixedResolution::new(0.0, self.toolconfig.steps_per_unit_x);
-        let stop = FixedResolution::new(arc_length, self.toolconfig.steps_per_unit_x);
+        let mut angle = FixedResolution::new(
+            start_angle,
+            self.toolconfig.steps_per_unit_x * self.toolconfig.steps_per_unit_x,
+        );
+        let stop = FixedResolution::new(
+            stop_angle,
+            self.toolconfig.steps_per_unit_x * self.toolconfig.steps_per_unit_y,
+        );
 
         let start_x = FixedResolution::new(current.x, self.toolconfig.steps_per_unit_x);
         let start_y = FixedResolution::new(current.y, self.toolconfig.steps_per_unit_y);
@@ -528,27 +623,15 @@ impl SimpleMachine {
         }
 
         loop {
-            match step.get_direction(&stop) {
+            match angle.get_direction(&stop) {
                 Some(direction) => {
-                    step = step.increment(direction);
-                    let dir = if clockwise {
-                        direction as f32
-                    } else {
-                        -1.0 * direction as f32
-                    };
+                    angle = angle.increment(direction);
+                    let cartesian = ((radius * angle.repr().cos()), (radius * angle.repr().sin()));
+                    let x = (center_x.repr() + cartesian.0);
+                    let y = (center_y.repr() + cartesian.1);
 
-                    let step_angle = dir * step.repr() / radius;
-
-                    let step_x = FixedResolution::new(
-                        direction as f32 * radius * step_angle.cos(),
-                        self.toolconfig.steps_per_unit_x,
-                    );
-                    let step_y = FixedResolution::new(
-                        direction as f32 * radius * step_angle.sin(),
-                        self.toolconfig.steps_per_unit_y,
-                    );
-                    let next_x = center_x.subtract(step_x);
-                    let next_y = center_y.subtract(step_y);
+                    let next_x = FixedResolution::new(x, self.toolconfig.steps_per_unit_x);
+                    let next_y = FixedResolution::new(y, self.toolconfig.steps_per_unit_y);
 
                     match current_x.get_direction(&next_x) {
                         Some(direction) => {
@@ -579,7 +662,7 @@ impl SimpleMachine {
                     }
                 }
                 None => {
-                    if step.equal(&stop) {
+                    if angle.equal(&stop) {
                         0
                     } else {
                         1
@@ -587,7 +670,7 @@ impl SimpleMachine {
                 }
             };
 
-            if step.equal(&stop) {
+            if angle.equal(&stop) {
                 break;
             }
         }
