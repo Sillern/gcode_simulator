@@ -32,13 +32,17 @@ impl ToolTrail {
     }
 
     pub fn add(&mut self, tool: &simple_machine::ToolState) {
+        let scale = 4.0;
         self.trail.push(Position {
-            x: tool.x,
-            y: tool.y,
-            z: tool.z,
+            x: scale * tool.x,
+            y: scale * tool.y,
+            z: scale * tool.z,
         });
 
         self.tool = tool.clone();
+        self.tool.x = scale * tool.x;
+        self.tool.y = scale * tool.y;
+        self.tool.z = scale * tool.z;
     }
 
     fn draw_square(image: &mut Image, x: u32, y: u32) {
@@ -133,7 +137,7 @@ pub fn setup_window(
     let mut current_state = simple_machine::ToolState::new();
     let mut tooltrail = ToolTrail::new();
     let mut sample = 0;
-    let sample_frequency = 400;
+    let sample_frequency = 200;
 
     while is_running {
         while let Some(event) = window.poll_event() {
