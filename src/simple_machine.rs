@@ -594,7 +594,19 @@ impl SimpleMachine {
             Position::new(next.x, next.y),
             Position::new(center.0, center.1),
         );
-        let stop_angle = raw_stop_angle - if clockwise { 0.0 } else { 2.0 * PI };
+        let stop_angle = if start_angle > raw_stop_angle {
+            if clockwise {
+                raw_stop_angle
+            } else {
+                2.0 * PI + raw_stop_angle
+            }
+        } else {
+            if clockwise {
+                raw_stop_angle - 2.0 * PI
+            } else {
+                raw_stop_angle
+            }
+        };
 
         let mut angle = FixedResolution::new(
             start_angle,
